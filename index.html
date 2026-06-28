@@ -196,7 +196,7 @@
   .add-search-btn{background:var(--gold);border:none;border-radius:3px;color:var(--bg);font-family:'Inter',sans-serif;font-size:12px;font-weight:700;padding:9px 16px;cursor:pointer;transition:background .2s;white-space:nowrap}
   .add-search-btn:hover{background:#DFB95C}
   .add-search-btn:disabled{opacity:.5;cursor:not-allowed}
-  .search-results-list{margin-top:12px;display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto}
+  .search-results-list{margin-top:12px;display:flex;flex-direction:column;gap:6px}
   .search-result-row{display:flex;align-items:center;gap:12px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:3px;transition:border-color .15s}
   .search-result-row:hover{border-color:var(--gold-dim)}
   .search-result-thumb{width:44px;height:44px;border-radius:2px;object-fit:cover;background:var(--groove);flex-shrink:0}
@@ -773,8 +773,7 @@ async function fetchAppleMusic(q,limit){
     }
 
     // albumTerm search — finds albums by exact title when q is an album name
-    if(results.length<limit){
-      try{
+    try{
         const r2=await fetch(
           `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&attribute=albumTerm&limit=${limit}&media=music`
         );
@@ -787,9 +786,8 @@ async function fetchAppleMusic(q,limit){
           });
         }
       }catch{}
-    }
 
-    return results.slice(0,limit);
+    return results;
   }catch{return[]}
 }
 
@@ -798,7 +796,7 @@ async function fetchAppleMusic(q,limit){
 // Apple Music results lead (highest-quality artwork + best catalog coverage);
 // iTunes fills in anything the attribute searches missed; Discogs and MusicBrainz
 // cover whatever Apple's catalog doesn't have.
-async function fetchAlbumSearch(q,limit=10){
+async function fetchAlbumSearch(q,limit=50){
   const [appleMusicRes,itunesRes,discogsRes,mbRes]=await Promise.all([
     fetchAppleMusic(q,limit),
     fetchItunes(q,limit),
@@ -815,7 +813,7 @@ async function fetchAlbumSearch(q,limit=10){
     seen.add(key);
     merged.push(item);
   });
-  return merged.slice(0,limit);
+  return merged;
 }
 
 // ── COVER ART (iTunes) ──
@@ -2371,7 +2369,7 @@ async function searchAlbums(){
   const btn=document.getElementById("addSearchBtn"),list=document.getElementById("searchResultsList");
   btn.disabled=true;btn.textContent="Searching";btn.classList.add("loading-dots");list.innerHTML="";
   try{
-    const results=await fetchAlbumSearch(q,12);
+    const results=await fetchAlbumSearch(q,50);
     btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
     if(!results.length){list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">No results found. Try a different search or add manually below.</p>`;return}
 
