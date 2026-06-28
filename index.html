@@ -791,11 +791,51 @@ async function fetchAppleMusic(q,limit){
   }catch{return[]}
 }
 
-// Pulls from all four sources in parallel, merges, and de-dupes by normalized
-// artist+title so the same album found on multiple services only shows up once.
-// Apple Music results lead (highest-quality artwork + best catalog coverage);
-// iTunes fills in anything the attribute searches missed; Discogs and MusicBrainz
-// cover whatever Apple's catalog doesn't have.
+// Score a result by how closely it matches the raw query string.
+// Higher score = better match. Source is irrelevant to scoring.
+function scoreResult(item, q){
+  const nq  = normalizeStr(q);
+  const na  = normalizeStr(item.artistName      || "");
+  const nt  = normalizeStr(item.collectionName  || "");
+  const nac = na + " " + nt;   // combined "artist album" string
+  let score = 0;
+
+  // ── Exact full-field matches (best possible) ──
+  if(na === nq) score += 200;
+  if(nt === nq) score += 200;
+
+  // ── Starts-with matches ──
+  if(na.startsWith(nq)) score += 80;
+  if(nt.startsWith(nq)) score += 80;
+
+  // ── Contains the whole query somewhere ──
+  if(na.includes(nq))  score += 50;
+  if(nt.includes(nq))  score += 50;
+  if(nac.includes(nq)) score += 25;
+
+  // ── Word-level matching ──
+  // Each query word found in artist or title adds to the score;
+  // matching all words together gets a bonus.
+  const qWords = nq.split(" ").filter(w => w.length > 1);
+  if(qWords.length > 0){
+    const inArtist = qWords.filter(w => na.includes(w)).length;
+    const inTitle  = qWords.filter(w => nt.includes(w)).length;
+    score += inArtist * 15;
+    score += inTitle  * 15;
+    // Bonus: every query word accounted for across artist + title
+    const covered = qWords.filter(w => nac.includes(w)).length;
+    if(covered === qWords.length) score += 40;
+  }
+
+  // ── Small bonus for having artwork (better UX) ──
+  if(item.artworkUrl60 || item.artworkUrl100) score += 5;
+
+  return score;
+}
+
+// Pulls from all four sources in parallel, merges, de-dupes by normalised
+// artist+title, then ranks purely by relevance to the query — source order
+// has no effect on the final ranking.
 async function fetchAlbumSearch(q,limit=50){
   const [appleMusicRes,itunesRes,discogsRes,mbRes]=await Promise.all([
     fetchAppleMusic(q,limit),
@@ -805,14 +845,17 @@ async function fetchAlbumSearch(q,limit=50){
   ]);
   const seen=new Set();
   const merged=[];
-  // Apple Music first (targeted attribute searches + best artwork), then iTunes for
-  // general coverage, then Discogs and MusicBrainz to fill in whatever's still missing.
+  // Interleave all sources so de-dup doesn't systematically favour one source;
+  // artwork-rich sources (Apple Music / iTunes) still win ties at the de-dup
+  // stage since they appear first, but ranking is done by score afterwards.
   [...appleMusicRes,...itunesRes,...discogsRes,...mbRes].forEach(item=>{
     const key=normalizeStr(item.artistName)+"|"+normalizeStr(item.collectionName);
     if(seen.has(key)||!item.collectionName)return;
     seen.add(key);
     merged.push(item);
   });
+  // Sort by relevance — highest score first, source is irrelevant
+  merged.sort((a,b)=>scoreResult(b,q)-scoreResult(a,q));
   return merged;
 }
 
