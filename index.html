@@ -534,7 +534,7 @@
     <div class="add-search-area">
       <div class="add-search-row">
         <div class="autocomplete-wrap" id="addAutoWrap">
-          <input class="add-search-input" id="addSearchInput" placeholder="Type artist or album — results appear as you type…" autocomplete="off">
+          <input class="add-search-input" id="addSearchInput" placeholder="Artist then album title — e.g. Metallica Master of Puppets…" autocomplete="off">
           <div class="autocomplete-dropdown" id="addAutoDropdown"></div>
         </div>
         <button class="add-search-btn" id="addSearchBtn" onclick="searchAlbums()">Search</button>
@@ -585,7 +585,7 @@
     </div>
     <div class="wantlist-add-row">
       <div class="autocomplete-wrap" id="wantAutoWrap" style="flex:1">
-        <input class="wantlist-input" id="wantSearchInput" placeholder="Search artist or album — results appear as you type…" autocomplete="off" style="width:100%">
+        <input class="wantlist-input" id="wantSearchInput" placeholder="Artist then album title — e.g. Pink Floyd The Wall…" autocomplete="off" style="width:100%">
         <div class="autocomplete-dropdown" id="wantAutoDropdown"></div>
       </div>
       <button class="wantlist-add-btn" id="wantManualAddBtn" onclick="addWantManual()">＋ Add Manually</button>
@@ -856,6 +856,23 @@ async function fetchAlbumSearch(q,limit=50){
   });
   // Sort by relevance — highest score first, source is irrelevant
   merged.sort((a,b)=>scoreResult(b,q)-scoreResult(a,q));
+
+  // Phrase-match filter: every word in the query must appear somewhere in
+  // the combined artist + title string (any distribution across the two fields).
+  // This mirrors a Google "quoted phrase" search — e.g. typing
+  // "Metallica Master of Puppets" only returns results that contain all of
+  // those words across artist and/or title, in any order.
+  const qWords = normalizeStr(q).split(" ").filter(w => w.length > 0);
+  if(qWords.length > 1){
+    const filtered = merged.filter(item => {
+      const combined = normalizeStr(item.artistName||"") + " " + normalizeStr(item.collectionName||"");
+      return qWords.every(w => combined.includes(w));
+    });
+    // Only apply the filter when it still yields results; otherwise fall back
+    // to the unfiltered ranked list so the user isn't left with nothing.
+    if(filtered.length > 0) return filtered;
+  }
+
   return merged;
 }
 
@@ -2369,8 +2386,9 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
   dropEl.innerHTML=results.map((item,i)=>{
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
+    const thumbSrc=item.artworkUrl60||item.artworkUrl100||"";
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item.artworkUrl60||''}" alt="">\
+<img class="ac-thumb" src="${thumbSrc}" alt="" referrerpolicy="no-referrer" data-artist="${escAttr(item.artistName||'')}" data-title="${escAttr(item.collectionName||'')}" data-src="${item._src||''}">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
@@ -2378,6 +2396,40 @@ ${badge}</div>`;
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
   });
+  // Batch all missing thumbnails into one parallel fetch round — much faster than
+  // firing one iTunes request per image sequentially.
+  (()=>{
+    const imgs=[...dropEl.querySelectorAll(".ac-thumb")];
+    // Serve from cache instantly, collect what still needs a fetch
+    const toFetch=[];
+    imgs.forEach(img=>{
+      const ck=(img.dataset.artist+"|"+img.dataset.title).toLowerCase();
+      if(caaCache[ck]){img.src=caaCache[ck];return;}
+      if(!img.dataset.artist&&!img.dataset.title)return;
+      toFetch.push(img);
+    });
+    if(!toFetch.length)return;
+    // Fire all lookups in parallel
+    Promise.all(toFetch.map(img=>{
+      const artist=img.dataset.artist,title=img.dataset.title;
+      const q=encodeURIComponent((artist+" "+title).trim());
+      return fetch("https://itunes.apple.com/search?term="+q+"&entity=album&limit=3")
+        .then(r=>r.ok?r.json():null)
+        .then(d=>{
+          if(!d||!d.results||!d.results.length)return;
+          const nt=normalizeStr(title),na=normalizeStr(artist);
+          let best=d.results.find(r=>normalizeStr(r.collectionName||"")===nt&&normalizeStr(r.artistName||"").includes(na.split(" ")[0]));
+          if(!best)best=d.results.find(r=>normalizeStr(r.collectionName||"").includes(nt.split(" ")[0]));
+          if(!best)best=d.results[0];
+          const url=(best.artworkUrl100||best.artworkUrl60||"").replace("100x100bb","200x200bb");
+          if(url){
+            const ck=(artist+"|"+title).toLowerCase();
+            caaCache[ck]=url;saveCaaCache();
+            if(img.isConnected)img.src=url;
+          }
+        }).catch(()=>{});
+    }));
+  })();
 }
 
 // Debounce util
@@ -2426,7 +2478,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="">
+        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" data-artist="${escAttr(item.artistName||'')}" data-title="${escAttr(item.collectionName||'')}">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2438,6 +2490,37 @@ async function searchAlbums(){
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
     });
+    // Batch-fetch missing thumbnails in parallel for instant cover load
+    (()=>{
+      const imgs=[...list.querySelectorAll(".search-result-thumb")];
+      const toFetch=[];
+      imgs.forEach(img=>{
+        const ck=(img.dataset.artist+"|"+img.dataset.title).toLowerCase();
+        if(caaCache[ck]){img.src=caaCache[ck];return;}
+        if(!img.dataset.artist&&!img.dataset.title)return;
+        toFetch.push(img);
+      });
+      if(!toFetch.length)return;
+      Promise.all(toFetch.map(img=>{
+        const artist=img.dataset.artist,title=img.dataset.title;
+        const q=encodeURIComponent((artist+" "+title).trim());
+        return fetch("https://itunes.apple.com/search?term="+q+"&entity=album&limit=3")
+          .then(r=>r.ok?r.json():null)
+          .then(d=>{
+            if(!d||!d.results||!d.results.length)return;
+            const nt=normalizeStr(title),na=normalizeStr(artist);
+            let best=d.results.find(r=>normalizeStr(r.collectionName||"")===nt&&normalizeStr(r.artistName||"").includes(na.split(" ")[0]));
+            if(!best)best=d.results.find(r=>normalizeStr(r.collectionName||"").includes(nt.split(" ")[0]));
+            if(!best)best=d.results[0];
+            const url=(best.artworkUrl100||best.artworkUrl60||"").replace("100x100bb","400x400bb");
+            if(url){
+              const ck=(artist+"|"+title).toLowerCase();
+              caaCache[ck]=url;saveCaaCache();
+              if(img.isConnected)img.src=url;
+            }
+          }).catch(()=>{});
+      }));
+    })();
   }catch{
     btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
     list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">Search failed. Check your connection and try again.</p>`;
@@ -2555,7 +2638,7 @@ function renderWantList(){
   if(!wantList.length){list.innerHTML=`<div class="wantlist-empty">🎯 Your wish list is empty.<br>Add albums you're hunting for.</div>`;return}
   list.innerHTML=wantList.map(item=>`
     <div class="want-item" data-id="${item.id}" tabindex="0" role="button" aria-label="${escAttr(item.artist)} — ${escAttr(item.title)}">
-      <img class="want-item-art" src="${escAttr(item.artUrl||getPlaceholder(item.genre||'default'))}" alt="">
+      <img class="want-item-art" src="${escAttr(item.artUrl||getPlaceholder(item.genre||'default'))}" alt="" referrerpolicy="no-referrer">
       <div class="want-item-info">
         <div class="want-item-title">${escAttr(item.title)}</div>
         <div class="want-item-artist">${escAttr(item.artist)}</div>
